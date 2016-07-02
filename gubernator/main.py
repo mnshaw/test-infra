@@ -178,6 +178,15 @@ def gcs_ls(path):
       path += '/'
     return list(gcs.listbucket(path, delimiter='/'))
 
+def get_pod_name(text):
+    """Find the pod name from the failure and return the pod name."""
+    p = re.search(r'(.*) pod (.*?) .*', text)
+    print ""
+    if p:
+        remove = re.compile(r'(\'|\"|\\)')
+        return remove.sub('', p.group(2))                     
+    else: 
+        return ""
 
 def parse_junit(xml):
     """Generate failed tests as a series of (name, duration, text) tuples."""
@@ -187,7 +196,8 @@ def parse_junit(xml):
             name = child.attrib['name']
             time = float(child.attrib['time'])
             for param in child.findall('failure'):
-                yield name, time, param.text
+                pod_name = get_pod_name(param.text)            
+                yield name, time, param.text, pod_name
     elif tree.tag == 'testsuites':
         for testsuite in tree:
             suite_name = testsuite.attrib['name']
@@ -195,7 +205,8 @@ def parse_junit(xml):
                 name = '%s %s' % (suite_name, child.attrib['name'])
                 time = float(child.attrib['time'])
                 for param in child.findall('failure'):
-                    yield name, time, param.text
+                    pod_name = get_pod_name(param.text)
+                    yield name, time, param.text, pod_name
     else:
         logging.error('unable to find failures, unexpected tag %s', tree.tag)
 
@@ -219,20 +230,36 @@ def build_details(build_dir):
     if finished and not started:
         started = 'null'
     if started and not finished:
-	finished = 'null'
+        finished = 'null'
     elif not (started and finished):
         return
     started = json.loads(started)
     finished = json.loads(finished)
+
     failures = []
+    junit_futures = {}
     junit_paths = [f.filename for f in gcs_ls('%s/artifacts' % build_dir)
                    if re.match(r'junit_.*\.xml', os.path.basename(f.filename))]
-    junit_futures = [gcs_read_async(f) for f in junit_paths]
+    
+#WIP HERE: try to get a dictionary for key:failure, value:fp so you can pass 
+#through the fp so you know where to get the kubelet log files from.
+#Or just get the fp and failure matched up somehow.
+    # junit_futures = [gcs_read_async(f) for f in junit_paths]
+    for f in junit_paths:
+        junit_futures[gcs_read_async(f)] = f
+
     for future in junit_futures:
         junit = future.get_result()
         if junit is None:
             continue
+        # print "future"
+        # print future
+        # print "fp"
+        # print junit_futures[future], "\n"
         failures.extend(parse_junit(junit))
+
+
+
     build_log = None
     if finished and finished.get('result') != 'SUCCESS' and len(failures) == 0:
         build_log = gcs_read_async(build_dir + '/build-log.txt').get_result()
@@ -300,6 +327,16 @@ class BuildListHandler(RenderingHandler):
         self.render('build_list.html',
                     dict(job=job, job_dir=job_dir, fstats=fstats))
 
+class NodeLogHandler(RenderingHandler):
+    def get(self, prefix, job, build):
+        self.check_bucket(prefix)
+        job_dir = '/%s/%s/' % (prefix, job)
+        build_dir = job_dir + build
+        pod_name = self.request.get("pod")
+        self.render('node_404.html', {"build_dir": build_dir, 
+            "pod_name":pod_name})
+        self.response.set_status(404)
+        return
 
 class JobListHandler(RenderingHandler):
     """Show a list of Jobs in a directory."""
@@ -355,5 +392,6 @@ app = webapp2.WSGIApplication([
     (r'/jobs/(.*)$', JobListHandler),
     (r'/builds/(.*)/([^/]+)/?', BuildListHandler),
     (r'/build/(.*)/([^/]+)/(\d+)/?', BuildHandler),
+    (r'/build/(.*)/([^/]+)/(\d+)/nodelog*', NodeLogHandler),
     (r'/pr/(\d+)', PRHandler),
 ], debug=True)
