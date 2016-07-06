@@ -179,7 +179,7 @@ def build_details(build_dir):
     last_len = 0
     total_len = 0
     for f in junit_paths:
-        junit_futures[gcs_read_async(f)] = f
+        junit_futures[gcs_async.read(f)] = f
 
     for future in junit_futures:
         junit = future.get_result()
@@ -216,7 +216,7 @@ def parse_kubelet(pod, junit, build_dir):
                         kubelet_fp = file
     if kubelet_fp == "":
         return False
-    kubelet_log = gcs_read_async(kubelet_fp).get_result()
+    kubelet_log = gcs_async.read(kubelet_fp).get_result()
     if kubelet_log:
         kubelet_log = kubelet_parser.digest(kubelet_log.decode('utf8', 
             'replace'), pod=pod)
@@ -260,7 +260,6 @@ def pr_builds(pr):
         jobs.setdefault(job, []).append((build, started, finished))
 
     return jobs
-
 
 class RenderingHandler(webapp2.RequestHandler):
     """Base class for Handlers that render Jinja templates."""
