@@ -34,6 +34,7 @@ import cloudstorage as gcs
 
 import filters
 import log_parser
+import kubelet_parser
 
 BUCKET_WHITELIST = {
     re.match(r'gs://([^/]+)', path).group(1)
@@ -181,7 +182,6 @@ def gcs_ls(path):
 def get_pod_name(text):
     """Find the pod name from the failure and return the pod name."""
     p = re.search(r'(.*) pod (.*?) .*', text)
-    print ""
     if p:
         remove = re.compile(r'(\'|\"|\\)')
         return remove.sub('', p.group(2))                     
@@ -253,7 +253,7 @@ def build_details(build_dir):
             continue
         failures.extend(parse_junit(junit))
         total_len = len(fps)
-        last_len = len(failures)-total_len
+        last_len = len(failures) - total_len
         for i in xrange(last_len):
             fps.append(junit_futures[future])
 
@@ -267,11 +267,27 @@ def build_details(build_dir):
     return started, finished, failures, build_log, fps
 
 def parse_kubelet(pod, junit, build_dir):
-    # print pod
-    # print junit
-    # print build_dir
     junit_file = "junit_" + junit + ".xml"
+    tmps = [f.filename for f in gcs_ls('%s/artifacts' % build_dir)
+            if re.match(r'.*/tmp-node.*', f.filename)]    
 
+    junit_regex = r".*" + junit_file + r".*"
+    kubelet_fp = ""
+    for folder in tmps:
+        tmp_contents = [f.filename for f in gcs_ls(folder)]
+        for f in tmp_contents:
+            if re.match(junit_regex, f):
+                for file in tmp_contents:
+                    if re.match(r'.*kubelet\.log', file):
+                        kubelet_fp = file
+    if kubelet_fp == "":
+        return False
+    kubelet_log = gcs_read_async(kubelet_fp).get_result()
+    if kubelet_log:
+        kubelet_log = kubelet_parser.digest(kubelet_log.decode('utf8', 
+            'replace'), pod=pod)
+
+    return kubelet_log
 
 class RenderingHandler(webapp2.RequestHandler):
     """Base class for Handlers that render Jinja templates."""
@@ -316,7 +332,6 @@ class BuildHandler(RenderingHandler):
         for fp in fps:
             num = re.search(r'.*(\d\d)\.xml', fp)
             junit_file[fp] = num.group(1)
-        # pass in this to the render thing
 
         if started:
             commit = started['version'].split('+')[-1]
@@ -350,11 +365,15 @@ class NodeLogHandler(RenderingHandler):
         build_dir = job_dir + build
         pod_name = self.request.get("pod")
         junit = self.request.get("junit")
-        parse_kubelet(pod_name, junit, build_dir)
-        self.render('node_404.html', {"build_dir": build_dir, 
-            "pod_name":pod_name, "junit":junit})
-        self.response.set_status(404)
-        return
+        result = parse_kubelet(pod_name, junit, build_dir)
+        if not result:
+            self.render('node_404.html', {"build_dir": build_dir, 
+                "pod_name":pod_name, "junit":junit})
+            self.response.set_status(404)
+            return
+        self.render('kubelet.html', dict(
+            job_dir=job_dir, build_dir=build_dir,kubelet_log=result, job=job, 
+            build=build, pod=pod_name))
 
 class JobListHandler(RenderingHandler):
     """Show a list of Jobs in a directory."""
