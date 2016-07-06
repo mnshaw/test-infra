@@ -31,7 +31,8 @@
 {{text|linkify_stacktrace(commit)}}
 </pre>
 % endif
-<a class="anchor" id="{{podname|slugify}}" href="/build{{build_dir}}/nodelog?pod={{podname}}"><h4>{{podname}}</h4></a>
+<a class="anchor" id="{{podname|slugify}}" href="/build{{build_dir}}/nodelog?pod={{podname}}&junit={{junits[fps[name,time,text,podname]]}}"><h4>{{podname}}</h4></a>
+<h5>Above failure found in: {{fps[name,time,text,podname]}}</h5>
 % endfor
 % else
 <h2>{{"No Test Failures!" if finished else "Build Still Running!"}}</h2>

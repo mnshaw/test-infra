@@ -241,10 +241,9 @@ def build_details(build_dir):
     junit_paths = [f.filename for f in gcs_ls('%s/artifacts' % build_dir)
                    if re.match(r'junit_.*\.xml', os.path.basename(f.filename))]
     
-#WIP HERE: try to get a dictionary for key:failure, value:fp so you can pass 
-#through the fp so you know where to get the kubelet log files from.
-#Or just get the fp and failure matched up somehow.
-    # junit_futures = [gcs_read_async(f) for f in junit_paths]
+    fps = []
+    last_len = 0
+    total_len = 0
     for f in junit_paths:
         junit_futures[gcs_read_async(f)] = f
 
@@ -252,13 +251,11 @@ def build_details(build_dir):
         junit = future.get_result()
         if junit is None:
             continue
-        # print "future"
-        # print future
-        # print "fp"
-        # print junit_futures[future], "\n"
         failures.extend(parse_junit(junit))
-
-
+        total_len = len(fps)
+        last_len = len(failures)-total_len
+        for i in xrange(last_len):
+            fps.append(junit_futures[future])
 
     build_log = None
     if finished and finished.get('result') != 'SUCCESS' and len(failures) == 0:
@@ -267,7 +264,13 @@ def build_details(build_dir):
             build_log = log_parser.digest(build_log.decode('utf8', 'replace'))
             logging.info('fallback log parser emitted %d lines',
                          build_log.count('\n'))
-    return started, finished, failures, build_log
+    return started, finished, failures, build_log, fps
+
+def parse_kubelet(pod, junit, build_dir):
+    # print pod
+    # print junit
+    # print build_dir
+    junit_file = "junit_" + junit + ".xml"
 
 
 class RenderingHandler(webapp2.RequestHandler):
@@ -302,7 +305,19 @@ class BuildHandler(RenderingHandler):
             self.render('build_404.html', {"build_dir": build_dir})
             self.response.set_status(404)
             return
-        started, finished, failures, build_log = details
+        started, finished, failures, build_log, fps = details
+        
+        # map failure to the junit file it was in
+        failures_files = {}
+        for i in xrange(len(failures)):
+            failures_files[failures[i]] = fps[i] 
+        
+        junit_file = {}
+        for fp in fps:
+            num = re.search(r'.*(\d\d)\.xml', fp)
+            junit_file[fp] = num.group(1)
+        # pass in this to the render thing
+
         if started:
             commit = started['version'].split('+')[-1]
         else:
@@ -314,7 +329,8 @@ class BuildHandler(RenderingHandler):
         self.render('build.html', dict(
             job_dir=job_dir, build_dir=build_dir, job=job, build=build,
             commit=commit, started=started, finished=finished,
-            failures=failures, build_log=build_log, pr=pr))
+            failures=failures, build_log=build_log, pr=pr, fps=failures_files,
+            junits=junit_file))
 
 
 class BuildListHandler(RenderingHandler):
@@ -333,8 +349,10 @@ class NodeLogHandler(RenderingHandler):
         job_dir = '/%s/%s/' % (prefix, job)
         build_dir = job_dir + build
         pod_name = self.request.get("pod")
+        junit = self.request.get("junit")
+        parse_kubelet(pod_name, junit, build_dir)
         self.render('node_404.html', {"build_dir": build_dir, 
-            "pod_name":pod_name})
+            "pod_name":pod_name, "junit":junit})
         self.response.set_status(404)
         return
 
